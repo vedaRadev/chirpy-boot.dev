@@ -5,6 +5,7 @@ import (
     "sync/atomic"
     "encoding/json"
     "fmt"
+    "strings"
 )
 
 type ApiConfig struct { FileServerHits atomic.Int32 }
@@ -67,7 +68,7 @@ func main() {
         var reqParams RequestParameters
         if err := json.NewDecoder(req.Body).Decode(&reqParams); err != nil {
             res.WriteHeader(http.StatusInternalServerError)
-            res.Write([]byte(`{"error":"Something went wrong"}`))
+            res.Write([]byte(`{"error":"Failed to decode request json body"}`))
             return
         }
 
@@ -77,8 +78,18 @@ func main() {
             return
         }
 
+        // Filter profanity
+        words := strings.Split(reqParams.Body, " ")
+        for i := range words {
+            lower := strings.ToLower(words[i])
+            if lower == "kerfuffle" || lower == "sharbert" || lower == "fornax" {
+                words[i] = "****"
+            }
+        }
+        cleaned := strings.Join(words, " ")
+
         res.WriteHeader(http.StatusOK)
-        res.Write([]byte(`{"valid":true}`))
+        res.Write([]byte(fmt.Sprintf(`{"cleaned_body":"%s"}`, cleaned)))
     })
 
     //============================== ADMIN ==============================
