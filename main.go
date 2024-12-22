@@ -1,11 +1,18 @@
 package main
 
+import _ "github.com/lib/pq"
 import (
     "net/http"
     "sync/atomic"
     "encoding/json"
     "fmt"
     "strings"
+    "os"
+    "database/sql"
+
+    "github.com/joho/godotenv"
+
+    "github.com/vedaRadev/chirpy-boot.dev/internal/database"
 )
 
 type ApiConfig struct { FileServerHits atomic.Int32 }
@@ -46,9 +53,19 @@ func (cfg *ApiConfig) ResetHandler(res http.ResponseWriter, req *http.Request) {
 }
 
 func main() {
-    apiCfg := ApiConfig {}
+    godotenv.Load()
+    dbUrl := os.Getenv("DB_URL")
+    db, err := sql.Open("postgres", dbUrl)
+    if err != nil {
+        fmt.Println("Failed to connect to chirpy db")
+        os.Exit(1)
+    }
+    database.New(db)
+    fmt.Println("Connected to the chirpy db")
+    // dbQueries := database.New(db)
 
     serveMux := http.NewServeMux()
+    apiCfg := ApiConfig {}
 
     //============================== APP ==============================
     serveMux.Handle("/app/", apiCfg.MiddlewareMetricsInc(http.StripPrefix("/app", http.FileServer(http.Dir("site")))))
