@@ -3,6 +3,7 @@ package main
 import (
     "net/http"
     "sync/atomic"
+    "encoding/json"
     "fmt"
 )
 
@@ -47,12 +48,40 @@ func main() {
     apiCfg := ApiConfig {}
 
     serveMux := http.NewServeMux()
+
+    //============================== APP ==============================
     serveMux.Handle("/app/", apiCfg.MiddlewareMetricsInc(http.StripPrefix("/app", http.FileServer(http.Dir("site")))))
+
+    //============================== API ==============================
     serveMux.HandleFunc("GET /api/healthz", func(res http.ResponseWriter, req *http.Request) {
         res.WriteHeader(http.StatusOK)
         res.Header().Add("Content-Type", "text/plain; charset=utf-8")
         res.Write([]byte("OK"))
     })
+    serveMux.HandleFunc("POST /api/validate_chirp", func (res http.ResponseWriter, req *http.Request) {
+        type RequestParameters struct { Body string `json:"body"` }
+        const MAX_CHIRP_LEN int = 140
+
+        res.Header().Set("Content-Type", "application/json")
+
+        var reqParams RequestParameters
+        if err := json.NewDecoder(req.Body).Decode(&reqParams); err != nil {
+            res.WriteHeader(http.StatusInternalServerError)
+            res.Write([]byte(`{"error":"Something went wrong"}`))
+            return
+        }
+
+        if len(reqParams.Body) > MAX_CHIRP_LEN {
+            res.WriteHeader(http.StatusBadRequest)
+            res.Write([]byte(`{"error":"Chirp is too long"}`))
+            return
+        }
+
+        res.WriteHeader(http.StatusOK)
+        res.Write([]byte(`{"valid":true}`))
+    })
+
+    //============================== ADMIN ==============================
     serveMux.HandleFunc("GET /admin/metrics", apiCfg.MetricsHandler)
     serveMux.HandleFunc("POST /admin/reset", apiCfg.ResetHandler)
 
