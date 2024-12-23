@@ -26,3 +26,14 @@ func (q *Queries) CreateUser(ctx context.Context, email string) (User, error) {
 	)
 	return i, err
 }
+
+const reset = `-- name: Reset :one
+DELETE FROM users RETURNING NULL
+`
+
+func (q *Queries) Reset(ctx context.Context) (interface{}, error) {
+	row := q.db.QueryRowContext(ctx, reset)
+	var column_1 interface{}
+	err := row.Scan(&column_1)
+	return column_1, err
+}

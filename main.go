@@ -9,13 +9,19 @@ import (
     "strings"
     "os"
     "database/sql"
+    // "time"
 
     "github.com/joho/godotenv"
+	// "github.com/google/uuid"
 
     "github.com/vedaRadev/chirpy-boot.dev/internal/database"
 )
 
-type ApiConfig struct { FileServerHits atomic.Int32 }
+type ApiConfig struct  {
+    FileServerHits atomic.Int32
+    Platform string
+    Db *database.Queries
+}
 
 func (cfg *ApiConfig) MiddlewareMetricsInc(next http.Handler) http.Handler {
     return http.HandlerFunc(func(res http.ResponseWriter, req *http.Request) {
@@ -24,12 +30,7 @@ func (cfg *ApiConfig) MiddlewareMetricsInc(next http.Handler) http.Handler {
     })
 }
 
-func (cfg *ApiConfig) MiddlewareMetricsReset(next http.Handler) http.Handler {
-    cfg.FileServerHits.Store(0)
-    return next
-}
-
-func (cfg *ApiConfig) MetricsHandler(res http.ResponseWriter, req *http.Request) {
+func (cfg *ApiConfig) HandleMetrics(res http.ResponseWriter, req *http.Request) {
     res.WriteHeader(http.StatusOK)
     res.Header().Add("Content-Type", "text/html; charset=utf-8")
     html := fmt.Sprintf(
@@ -46,10 +47,51 @@ func (cfg *ApiConfig) MetricsHandler(res http.ResponseWriter, req *http.Request)
     res.Write([]byte(html))
 }
 
-func (cfg *ApiConfig) ResetHandler(res http.ResponseWriter, req *http.Request) {
+func (cfg *ApiConfig) HandleReset(res http.ResponseWriter, req *http.Request) {
+    if cfg.Platform != "dev" {
+        res.WriteHeader(http.StatusForbidden)
+        res.Write([]byte(http.StatusText(http.StatusForbidden)))
+        return
+    }
+
+    // TODO should we bail entirely or continue on and reset everything we can?
+    if _, err := cfg.Db.Reset(req.Context()); err != nil {
+        res.WriteHeader(http.StatusInternalServerError)
+        msg := fmt.Sprintf("Failed to reset database: %v", err.Error())
+        fmt.Println(msg)
+        res.Write([]byte(msg))
+        return
+    }
+
     cfg.FileServerHits.Store(0)
     res.WriteHeader(http.StatusOK)
     res.Write([]byte(http.StatusText(http.StatusOK)))
+}
+
+func (cfg *ApiConfig) HandleCreateUser(res http.ResponseWriter, req *http.Request) {
+    type RequestParameters struct { Email string `json:"email"` }
+
+    res.Header().Set("Content-Type", "application/json")
+
+    var reqParams RequestParameters
+    if err := json.NewDecoder(req.Body).Decode(&reqParams); err != nil {
+        res.WriteHeader(http.StatusInternalServerError)
+        res.Write([]byte(`{"error":"Failed to decode request json body"}`))
+    }
+
+    user, err := cfg.Db.CreateUser(req.Context(), reqParams.Email)
+    if err != nil {
+        res.WriteHeader(http.StatusInternalServerError)
+        res.Write([]byte(`{"error":"Failed to create user"}`))
+        // TODO better logging
+        fmt.Printf("Failed to create user %v: %v\n", reqParams.Email, err.Error())
+        return
+    }
+
+    res.WriteHeader(http.StatusCreated)
+    // FIXME assuming that the json marshalling will never fail
+    resBody, _ := json.Marshal(user)
+    res.Write(resBody)
 }
 
 func main() {
@@ -62,10 +104,10 @@ func main() {
     }
     database.New(db)
     fmt.Println("Connected to the chirpy db")
-    // dbQueries := database.New(db)
+    dbQueries := database.New(db)
 
     serveMux := http.NewServeMux()
-    apiCfg := ApiConfig {}
+    apiCfg := ApiConfig { Platform: os.Getenv("PLATFORM"), Db: dbQueries }
 
     //============================== APP ==============================
     serveMux.Handle("/app/", apiCfg.MiddlewareMetricsInc(http.StripPrefix("/app", http.FileServer(http.Dir("site")))))
@@ -108,10 +150,11 @@ func main() {
         res.WriteHeader(http.StatusOK)
         res.Write([]byte(fmt.Sprintf(`{"cleaned_body":"%s"}`, cleaned)))
     })
+    serveMux.HandleFunc("POST /api/users", apiCfg.HandleCreateUser)
 
     //============================== ADMIN ==============================
-    serveMux.HandleFunc("GET /admin/metrics", apiCfg.MetricsHandler)
-    serveMux.HandleFunc("POST /admin/reset", apiCfg.ResetHandler)
+    serveMux.HandleFunc("GET /admin/metrics", apiCfg.HandleMetrics)
+    serveMux.HandleFunc("POST /admin/reset", apiCfg.HandleReset)
 
     server := http.Server { Handler: serveMux, Addr: ":8080" }
     server.ListenAndServe()
