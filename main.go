@@ -1,3 +1,10 @@
+// TODO's
+//
+// Helper function for sending simple json error responses?
+// I don't really see much benefit to this yet since it really doesn't cut down on code length or
+// make anything more concise. It _maybe_ could save me from typos when creating the json body but
+// it's literally one field and I just don't see it being an issue.
+
 package main
 
 import _ "github.com/lib/pq"
