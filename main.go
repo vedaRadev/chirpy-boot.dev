@@ -1,4 +1,4 @@
-// TODO's
+// TODO's (apart from the ones littered throughout the code already)
 //
 // Helper function for sending simple json error responses?
 // I don't really see much benefit to this yet since it really doesn't cut down on code length or
@@ -18,6 +18,7 @@ import (
     "database/sql"
 
     "github.com/joho/godotenv"
+    "github.com/google/uuid"
 
     "github.com/vedaRadev/chirpy-boot.dev/internal/database"
 )
@@ -99,9 +100,11 @@ func (cfg *ApiConfig) HandleCreateUser(res http.ResponseWriter, req *http.Reques
     res.Write(resBody)
 }
 
-func HandleValidateChirp(res http.ResponseWriter, req *http.Request) {
-    type RequestParameters struct { Body string `json:"body"` }
-    const MAX_CHIRP_LEN int = 140
+func (cfg *ApiConfig) HandleCreateChirp(res http.ResponseWriter, req *http.Request) {
+    type RequestParameters struct  {
+        Body string `json:"body"`
+        UserID uuid.UUID `json:"user_id"`
+    }
 
     res.Header().Set("Content-Type", "application/json")
 
@@ -112,12 +115,15 @@ func HandleValidateChirp(res http.ResponseWriter, req *http.Request) {
         return
     }
 
+    // TODO pull out into helper, maybe just have it return a boolean
+    const MAX_CHIRP_LEN int = 140
     if len(reqParams.Body) > MAX_CHIRP_LEN {
         res.WriteHeader(http.StatusBadRequest)
         res.Write([]byte(`{"error":"Chirp is too long"}`))
         return
     }
 
+    // TODO pull out into helper, return the cleaned chirp body as a string
     // Filter profanity
     words := strings.Split(reqParams.Body, " ")
     for i := range words {
@@ -128,8 +134,19 @@ func HandleValidateChirp(res http.ResponseWriter, req *http.Request) {
     }
     cleaned := strings.Join(words, " ")
 
-    res.WriteHeader(http.StatusOK)
-    res.Write([]byte(fmt.Sprintf(`{"cleaned_body":"%s"}`, cleaned)))
+    params := database.CreateChirpParams { Body: cleaned, UserID: reqParams.UserID }
+    chirp, err := cfg.Db.CreateChirp(req.Context(), params)
+    if err != nil {
+        res.WriteHeader(http.StatusInternalServerError)
+        res.Write([]byte(`{"error":"Failed to create chirp in database"}`))
+        fmt.Printf(`Failed to create chirp in db: user %v, chirp "%v"\n`, reqParams.UserID, cleaned)
+        return
+    }
+
+    res.WriteHeader(http.StatusCreated)
+    // FIXME assuming that the json marshalling will never fail
+    resBody, _ := json.Marshal(chirp)
+    res.Write(resBody)
 }
 
 func main() {
@@ -160,7 +177,7 @@ func main() {
         res.Header().Add("Content-Type", "text/plain; charset=utf-8")
         res.Write([]byte("OK"))
     })
-    serveMux.HandleFunc("POST /api/validate_chirp", HandleValidateChirp)
+    serveMux.HandleFunc("POST /api/chirps", apiCfg.HandleCreateChirp)
     serveMux.HandleFunc("POST /api/users", apiCfg.HandleCreateUser)
     //============================== ADMIN ==============================
     serveMux.HandleFunc("GET /admin/metrics", apiCfg.HandleMetrics)
