@@ -9,10 +9,8 @@ import (
     "strings"
     "os"
     "database/sql"
-    // "time"
 
     "github.com/joho/godotenv"
-	// "github.com/google/uuid"
 
     "github.com/vedaRadev/chirpy-boot.dev/internal/database"
 )
@@ -94,6 +92,39 @@ func (cfg *ApiConfig) HandleCreateUser(res http.ResponseWriter, req *http.Reques
     res.Write(resBody)
 }
 
+func HandleValidateChirp(res http.ResponseWriter, req *http.Request) {
+    type RequestParameters struct { Body string `json:"body"` }
+    const MAX_CHIRP_LEN int = 140
+
+    res.Header().Set("Content-Type", "application/json")
+
+    var reqParams RequestParameters
+    if err := json.NewDecoder(req.Body).Decode(&reqParams); err != nil {
+        res.WriteHeader(http.StatusInternalServerError)
+        res.Write([]byte(`{"error":"Failed to decode request json body"}`))
+        return
+    }
+
+    if len(reqParams.Body) > MAX_CHIRP_LEN {
+        res.WriteHeader(http.StatusBadRequest)
+        res.Write([]byte(`{"error":"Chirp is too long"}`))
+        return
+    }
+
+    // Filter profanity
+    words := strings.Split(reqParams.Body, " ")
+    for i := range words {
+        lower := strings.ToLower(words[i])
+        if lower == "kerfuffle" || lower == "sharbert" || lower == "fornax" {
+            words[i] = "****"
+        }
+    }
+    cleaned := strings.Join(words, " ")
+
+    res.WriteHeader(http.StatusOK)
+    res.Write([]byte(fmt.Sprintf(`{"cleaned_body":"%s"}`, cleaned)))
+}
+
 func main() {
     godotenv.Load()
     dbUrl := os.Getenv("DB_URL")
@@ -107,51 +138,23 @@ func main() {
     dbQueries := database.New(db)
 
     serveMux := http.NewServeMux()
-    apiCfg := ApiConfig { Platform: os.Getenv("PLATFORM"), Db: dbQueries }
+    platform := os.Getenv("PLATFORM")
+    if platform == "" {
+        fmt.Println("platform must be set")
+        os.Exit(1)
+    }
+    apiCfg := ApiConfig { Platform: platform, Db: dbQueries }
 
     //============================== APP ==============================
     serveMux.Handle("/app/", apiCfg.MiddlewareMetricsInc(http.StripPrefix("/app", http.FileServer(http.Dir("site")))))
-
     //============================== API ==============================
     serveMux.HandleFunc("GET /api/healthz", func(res http.ResponseWriter, req *http.Request) {
         res.WriteHeader(http.StatusOK)
         res.Header().Add("Content-Type", "text/plain; charset=utf-8")
         res.Write([]byte("OK"))
     })
-    serveMux.HandleFunc("POST /api/validate_chirp", func (res http.ResponseWriter, req *http.Request) {
-        type RequestParameters struct { Body string `json:"body"` }
-        const MAX_CHIRP_LEN int = 140
-
-        res.Header().Set("Content-Type", "application/json")
-
-        var reqParams RequestParameters
-        if err := json.NewDecoder(req.Body).Decode(&reqParams); err != nil {
-            res.WriteHeader(http.StatusInternalServerError)
-            res.Write([]byte(`{"error":"Failed to decode request json body"}`))
-            return
-        }
-
-        if len(reqParams.Body) > MAX_CHIRP_LEN {
-            res.WriteHeader(http.StatusBadRequest)
-            res.Write([]byte(`{"error":"Chirp is too long"}`))
-            return
-        }
-
-        // Filter profanity
-        words := strings.Split(reqParams.Body, " ")
-        for i := range words {
-            lower := strings.ToLower(words[i])
-            if lower == "kerfuffle" || lower == "sharbert" || lower == "fornax" {
-                words[i] = "****"
-            }
-        }
-        cleaned := strings.Join(words, " ")
-
-        res.WriteHeader(http.StatusOK)
-        res.Write([]byte(fmt.Sprintf(`{"cleaned_body":"%s"}`, cleaned)))
-    })
+    serveMux.HandleFunc("POST /api/validate_chirp", HandleValidateChirp)
     serveMux.HandleFunc("POST /api/users", apiCfg.HandleCreateUser)
-
     //============================== ADMIN ==============================
     serveMux.HandleFunc("GET /admin/metrics", apiCfg.HandleMetrics)
     serveMux.HandleFunc("POST /admin/reset", apiCfg.HandleReset)
