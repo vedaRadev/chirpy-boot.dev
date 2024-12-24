@@ -56,6 +56,7 @@ func DecodeRequestBodyParameters[T any](reqParams *T, res http.ResponseWriter, r
 type ApiConfig struct  {
     FileServerHits atomic.Int32
     Platform string
+    Secret string
     Db *database.Queries
 }
 
@@ -147,12 +148,22 @@ func (cfg *ApiConfig) HandleCreateUser(res http.ResponseWriter, req *http.Reques
 }
 
 func (cfg *ApiConfig) HandleCreateChirp(res http.ResponseWriter, req *http.Request) {
-    type RequestParameters struct  {
-        Body string `json:"body"`
-        UserID uuid.UUID `json:"user_id"`
-    }
+    type RequestParameters struct  { Body string `json:"body"` }
     var reqParams RequestParameters
     if success := DecodeRequestBodyParameters(&reqParams, res, req); !success { return }
+
+    bearerToken, err := auth.GetBearerToken(req.Header)
+    if err != nil {
+        SendJsonErrorResponse(res, http.StatusBadRequest, err.Error())
+        return
+    }
+
+    userId, err := auth.ValidateJWT(bearerToken, cfg.Secret)
+    if err != nil {
+        SendJsonErrorResponse(res, http.StatusUnauthorized, "failed to authorize jwt")
+        fmt.Printf("failed to authorize jwt: %v\n", err.Error())
+        return
+    }
 
     // TODO pull out into helper, maybe just have it return a boolean
     const MAX_CHIRP_LEN int = 140
@@ -172,11 +183,11 @@ func (cfg *ApiConfig) HandleCreateChirp(res http.ResponseWriter, req *http.Reque
     }
     cleaned := strings.Join(words, " ")
 
-    params := database.CreateChirpParams { Body: cleaned, UserID: reqParams.UserID }
+    params := database.CreateChirpParams { Body: cleaned, UserID: userId }
     chirp, err := cfg.Db.CreateChirp(req.Context(), params)
     if err != nil {
         SendJsonErrorResponse(res, http.StatusInternalServerError, "failed to create chirp")
-        fmt.Printf(`Failed to create chirp in db: user %v, chirp "%v"\n`, reqParams.UserID, cleaned)
+        fmt.Printf(`Failed to create chirp in db: user %v, chirp "%v"\n`, userId, cleaned)
         return
     }
 
@@ -215,6 +226,7 @@ func (cfg *ApiConfig) HandleLogin(res http.ResponseWriter, req *http.Request) {
     type RequestParameters struct  {
         Email string `json:"email"`
         Password string `json:"password"`
+        ExpiresInSeconds *int `json:"expires_in_seconds"`
     }
     var reqParams RequestParameters
     if success := DecodeRequestBodyParameters(&reqParams, res, req); !success { return }
@@ -230,18 +242,34 @@ func (cfg *ApiConfig) HandleLogin(res http.ResponseWriter, req *http.Request) {
         return
     }
 
+    expiresIn := time.Hour
+    if reqParams.ExpiresInSeconds != nil {
+        clientDefinedDuration := time.Duration(*reqParams.ExpiresInSeconds) * time.Second
+        if clientDefinedDuration > 0 && clientDefinedDuration < time.Hour {
+            expiresIn = clientDefinedDuration
+        }
+    }
+
+    token, err := auth.MakeJWT(user.ID, cfg.Secret, expiresIn)
+    if err != nil {
+        SendJsonErrorResponse(res, http.StatusInternalServerError, "failed to make jwt")
+        return
+    }
+
     // Intentionally omitting hashed_password field
     type ResponseUser struct {
-        ID             uuid.UUID `json:"id"`
-        CreatedAt      time.Time `json:"created_at"`
-        UpdatedAt      time.Time `json:"updated_at"`
-        Email          string    `json:"email"`
+        ID          uuid.UUID `json:"id"`
+        CreatedAt   time.Time `json:"created_at"`
+        UpdatedAt   time.Time `json:"updated_at"`
+        Email       string    `json:"email"`
+        Token       string    `json:"token"`
     }
     responseUser := ResponseUser {
         ID: user.ID,
         CreatedAt: user.CreatedAt,
         UpdatedAt: user.UpdatedAt,
         Email: user.Email,
+        Token: token,
     }
 
     SendJsonResponse(res, http.StatusOK, responseUser)
@@ -263,7 +291,12 @@ func main() {
         fmt.Println("platform must be set")
         os.Exit(1)
     }
-    apiCfg := ApiConfig { Platform: platform, Db: dbQueries }
+    secret := os.Getenv("SECRET")
+    if secret == "" {
+        fmt.Println("secret must be set")
+        os.Exit(1)
+    }
+    apiCfg := ApiConfig { Platform: platform, Secret: secret, Db: dbQueries }
 
     serveMux := http.NewServeMux()
     //============================== APP ==============================
