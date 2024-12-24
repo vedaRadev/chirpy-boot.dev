@@ -1,23 +1,7 @@
 // TODO's (apart from the ones littered throughout the code already)
 //
-// Helper function for sending simple json error responses?
-// I don't really see much benefit to this yet since it really doesn't cut down on code length or
-// make anything more concise. It _maybe_ could save me from typos when creating the json body but
-// it's literally one field and I just don't see it being an issue.
-// PRO: If I want to change the field(s) we're sending in the JSON I just have to update it in one place.
-//
-// Deal with potential errors when marshalling response body data into JSON.
-//
-// Helper function for sending JSON responses?
-//
 // Break up handlers into separate files based on resource endpoint?
 // I don't think the API is really large enough to warrant this yet.
-//
-// Helper function to decode request parameters (maybe also send error if failure)
-
-// FIXME's
-// In most API handlers I'm assuming that the marshalling of structs into JSON never fails but this
-// might be a bad assumption.
 
 package main
 
@@ -39,6 +23,36 @@ import (
     "github.com/vedaRadev/chirpy-boot.dev/internal/auth"
 )
 
+func SendJsonErrorResponse(res http.ResponseWriter, code int, message string) {
+    if message == "" { message = http.StatusText(code) }
+    res.Header().Set("Content-Type", "application/json")
+    res.WriteHeader(code)
+    res.Write([]byte(fmt.Sprintf(`{"error":"%s"}`, message)))
+}
+
+// Attempt to send a json response, send an error if something goes wrong when marshalling data
+func SendJsonResponse(res http.ResponseWriter, code int, data any) {
+    resBody, err := json.Marshal(data)
+    if err != nil {
+        SendJsonErrorResponse(res, http.StatusInternalServerError, "failed to marshal response data")
+        return
+    }
+
+    res.Header().Set("Content-Type", "application/json")
+    res.WriteHeader(code)
+    res.Write(resBody)
+}
+
+// Try to decode request parameters, send an error response on decode failure.
+func DecodeRequestBodyParameters[T any](reqParams *T, res http.ResponseWriter, req *http.Request) bool {
+    if err := json.NewDecoder(req.Body).Decode(reqParams); err != nil {
+        SendJsonErrorResponse(res, http.StatusInternalServerError, "failed to decode request body")
+        return false
+    }
+
+    return true
+}
+
 type ApiConfig struct  {
     FileServerHits atomic.Int32
     Platform string
@@ -53,8 +67,6 @@ func (cfg *ApiConfig) MiddlewareMetricsInc(next http.Handler) http.Handler {
 }
 
 func (cfg *ApiConfig) HandleMetrics(res http.ResponseWriter, req *http.Request) {
-    res.WriteHeader(http.StatusOK)
-    res.Header().Add("Content-Type", "text/html; charset=utf-8")
     html := fmt.Sprintf(
         `
         <html>
@@ -66,6 +78,8 @@ func (cfg *ApiConfig) HandleMetrics(res http.ResponseWriter, req *http.Request) 
         `,
         cfg.FileServerHits.Load(),
     )
+    res.Header().Add("Content-Type", "text/html; charset=utf-8")
+    res.WriteHeader(http.StatusOK)
     res.Write([]byte(html))
 }
 
@@ -95,20 +109,12 @@ func (cfg *ApiConfig) HandleCreateUser(res http.ResponseWriter, req *http.Reques
         Email string `json:"email"`
         Password string `json:"password"`
     }
-
-    res.Header().Set("Content-Type", "application/json")
-
     var reqParams RequestParameters
-    if err := json.NewDecoder(req.Body).Decode(&reqParams); err != nil {
-        res.WriteHeader(http.StatusInternalServerError)
-        res.Write([]byte(`{"error":"Failed to decode request json body"}`))
-        return
-    }
+    if success := DecodeRequestBodyParameters(&reqParams, res, req); !success { return }
 
     hashedPassword, err := auth.HashPassword(reqParams.Password)
     if err != nil {
-        res.WriteHeader(http.StatusInternalServerError)
-        res.Write([]byte(`{"error":"Failed to encrypt password"}`))
+        SendJsonErrorResponse(res, http.StatusInternalServerError, "failed to encrypt password")
         return
     }
 
@@ -118,8 +124,7 @@ func (cfg *ApiConfig) HandleCreateUser(res http.ResponseWriter, req *http.Reques
     }
     user, err := cfg.Db.CreateUser(req.Context(), params)
     if err != nil {
-        res.WriteHeader(http.StatusInternalServerError)
-        res.Write([]byte(`{"error":"Failed to create user"}`))
+        SendJsonErrorResponse(res, http.StatusInternalServerError, "failed to create user")
         fmt.Printf("Failed to create user %v: %v\n", reqParams.Email, err.Error())
         return
     }
@@ -138,9 +143,7 @@ func (cfg *ApiConfig) HandleCreateUser(res http.ResponseWriter, req *http.Reques
         Email: user.Email,
     }
 
-    res.WriteHeader(http.StatusCreated)
-    resBody, _ := json.Marshal(responseUser)
-    res.Write(resBody)
+    SendJsonResponse(res, http.StatusCreated, responseUser)
 }
 
 func (cfg *ApiConfig) HandleCreateChirp(res http.ResponseWriter, req *http.Request) {
@@ -148,21 +151,13 @@ func (cfg *ApiConfig) HandleCreateChirp(res http.ResponseWriter, req *http.Reque
         Body string `json:"body"`
         UserID uuid.UUID `json:"user_id"`
     }
-
-    res.Header().Set("Content-Type", "application/json")
-
     var reqParams RequestParameters
-    if err := json.NewDecoder(req.Body).Decode(&reqParams); err != nil {
-        res.WriteHeader(http.StatusInternalServerError)
-        res.Write([]byte(`{"error":"Failed to decode request json body"}`))
-        return
-    }
+    if success := DecodeRequestBodyParameters(&reqParams, res, req); !success { return }
 
     // TODO pull out into helper, maybe just have it return a boolean
     const MAX_CHIRP_LEN int = 140
     if len(reqParams.Body) > MAX_CHIRP_LEN {
-        res.WriteHeader(http.StatusBadRequest)
-        res.Write([]byte(`{"error":"Chirp is too long"}`))
+        SendJsonErrorResponse(res, http.StatusBadRequest, "chirp is too long")
         return
     }
 
@@ -180,56 +175,40 @@ func (cfg *ApiConfig) HandleCreateChirp(res http.ResponseWriter, req *http.Reque
     params := database.CreateChirpParams { Body: cleaned, UserID: reqParams.UserID }
     chirp, err := cfg.Db.CreateChirp(req.Context(), params)
     if err != nil {
-        res.WriteHeader(http.StatusInternalServerError)
-        res.Write([]byte(`{"error":"Failed to create chirp in database"}`))
+        SendJsonErrorResponse(res, http.StatusInternalServerError, "failed to create chirp")
         fmt.Printf(`Failed to create chirp in db: user %v, chirp "%v"\n`, reqParams.UserID, cleaned)
         return
     }
 
-    res.WriteHeader(http.StatusCreated)
-    resBody, _ := json.Marshal(chirp)
-    res.Write(resBody)
+    SendJsonResponse(res, http.StatusCreated, chirp)
 }
 
 func (cfg *ApiConfig) HandleGetChirps(res http.ResponseWriter, req *http.Request) {
-    // NOTE no params for now
-
-    res.Header().Set("Content-Type", "application/json")
-
     chirps, err := cfg.Db.GetChirps(req.Context())
     if err != nil {
-        res.WriteHeader(http.StatusInternalServerError)
-        res.Write([]byte(`{"error":"Failed to retrieve chirps from database"}`))
+        SendJsonErrorResponse(res, http.StatusInternalServerError, "failed to get chirps")
         fmt.Printf("Failed to retrieve chirps from databse: %v\n", err)
         return
     }
 
-    res.WriteHeader(http.StatusOK)
-    resBody, _ := json.Marshal(chirps)
-    res.Write(resBody)
+    SendJsonResponse(res, http.StatusOK, chirps)
 }
 
 func (cfg *ApiConfig) HandleGetChirp(res http.ResponseWriter, req *http.Request) {
-    res.Header().Set("Content-Type", "application/json")
-
     idStr := req.PathValue("id")
     idUuid, err := uuid.Parse(idStr)
     if err != nil {
-        res.WriteHeader(http.StatusBadRequest)
-        res.Write([]byte(`{"error":"Invalid uuid"}`))
+        SendJsonErrorResponse(res, http.StatusBadRequest, "invalid uuid")
         return
     }
 
     chirp, err := cfg.Db.GetChirp(req.Context(), idUuid)
     if err != nil {
-        res.WriteHeader(http.StatusNotFound)
-        res.Write([]byte(`{"error":"Failed to get chirp"}`))
+        SendJsonErrorResponse(res, http.StatusNotFound, "failed to get chirp")
         return
     }
 
-    res.WriteHeader(http.StatusOK)
-    resBody, _ := json.Marshal(chirp)
-    res.Write(resBody)
+    SendJsonResponse(res, http.StatusOK, chirp)
 }
 
 func (cfg *ApiConfig) HandleLogin(res http.ResponseWriter, req *http.Request) {
@@ -237,24 +216,17 @@ func (cfg *ApiConfig) HandleLogin(res http.ResponseWriter, req *http.Request) {
         Email string `json:"email"`
         Password string `json:"password"`
     }
-
     var reqParams RequestParameters
-    if err := json.NewDecoder(req.Body).Decode(&reqParams); err != nil {
-        res.WriteHeader(http.StatusInternalServerError)
-        res.Write([]byte(`{"error":"Failed to decode request json body"}`))
-        return
-    }
+    if success := DecodeRequestBodyParameters(&reqParams, res, req); !success { return }
 
     user, err := cfg.Db.GetUserByEmail(req.Context(), reqParams.Email)
     if err != nil {
-        res.WriteHeader(http.StatusNotFound)
-        res.Write([]byte(`{"error":"User with the provided email not found"}`))
+        SendJsonErrorResponse(res, http.StatusNotFound, "no user with the provided email exists")
         return
     }
 
     if err := auth.CheckPasswordHash(reqParams.Password, user.HashedPassword); err != nil {
-        res.WriteHeader(http.StatusUnauthorized)
-        res.Write([]byte(`{"error":"Incorrect email or password"}`))
+        SendJsonErrorResponse(res, http.StatusUnauthorized, "incorrect email or password")
         return
     }
 
@@ -272,9 +244,7 @@ func (cfg *ApiConfig) HandleLogin(res http.ResponseWriter, req *http.Request) {
         Email: user.Email,
     }
 
-    res.WriteHeader(http.StatusOK)
-    resBody, _ := json.Marshal(responseUser)
-    res.Write(resBody)
+    SendJsonResponse(res, http.StatusOK, responseUser)
 }
 
 func main() {
