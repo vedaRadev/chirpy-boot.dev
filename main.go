@@ -4,6 +4,10 @@
 // I don't really see much benefit to this yet since it really doesn't cut down on code length or
 // make anything more concise. It _maybe_ could save me from typos when creating the json body but
 // it's literally one field and I just don't see it being an issue.
+//
+// Deal with potential errors when marshalling response body data into JSON.
+//
+// Helper function for sending JSON responses?
 
 package main
 
@@ -149,6 +153,47 @@ func (cfg *ApiConfig) HandleCreateChirp(res http.ResponseWriter, req *http.Reque
     res.Write(resBody)
 }
 
+func (cfg *ApiConfig) HandleGetChirps(res http.ResponseWriter, req *http.Request) {
+    // NOTE no params for now
+
+    res.Header().Set("Content-Type", "application/json")
+
+    chirps, err := cfg.Db.GetChirps(req.Context())
+    if err != nil {
+        res.WriteHeader(http.StatusInternalServerError)
+        res.Write([]byte(`{"error":"Failed to retrieve chirps from database"}`))
+        fmt.Printf("Failed to retrieve chirps from databse: %v\n", err)
+        return
+    }
+
+    res.WriteHeader(http.StatusOK)
+    resBody, _ := json.Marshal(chirps)
+    res.Write(resBody)
+}
+
+func (cfg *ApiConfig) HandleGetChirp(res http.ResponseWriter, req *http.Request) {
+    res.Header().Set("Content-Type", "application/json")
+
+    idStr := req.PathValue("id")
+    idUuid, err := uuid.Parse(idStr)
+    if err != nil {
+        res.WriteHeader(http.StatusBadRequest)
+        res.Write([]byte(`{"error":"Invalid uuid"}`))
+        return
+    }
+
+    chirp, err := cfg.Db.GetChirp(req.Context(), idUuid)
+    if err != nil {
+        res.WriteHeader(http.StatusNotFound)
+        res.Write([]byte(`{"error":"Failed to get chirp"}`))
+        return
+    }
+
+    res.WriteHeader(http.StatusOK)
+    resBody, _ := json.Marshal(chirp)
+    res.Write(resBody)
+}
+
 func main() {
     godotenv.Load()
     dbUrl := os.Getenv("DB_URL")
@@ -177,6 +222,8 @@ func main() {
         res.Header().Add("Content-Type", "text/plain; charset=utf-8")
         res.Write([]byte("OK"))
     })
+    serveMux.HandleFunc("GET /api/chirps", apiCfg.HandleGetChirps)
+    serveMux.HandleFunc("GET /api/chirps/{id}", apiCfg.HandleGetChirp)
     serveMux.HandleFunc("POST /api/chirps", apiCfg.HandleCreateChirp)
     serveMux.HandleFunc("POST /api/users", apiCfg.HandleCreateUser)
     //============================== ADMIN ==============================
