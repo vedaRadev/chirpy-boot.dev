@@ -4,10 +4,20 @@
 // I don't really see much benefit to this yet since it really doesn't cut down on code length or
 // make anything more concise. It _maybe_ could save me from typos when creating the json body but
 // it's literally one field and I just don't see it being an issue.
+// PRO: If I want to change the field(s) we're sending in the JSON I just have to update it in one place.
 //
 // Deal with potential errors when marshalling response body data into JSON.
 //
 // Helper function for sending JSON responses?
+//
+// Break up handlers into separate files based on resource endpoint?
+// I don't think the API is really large enough to warrant this yet.
+//
+// Helper function to decode request parameters (maybe also send error if failure)
+
+// FIXME's
+// In most API handlers I'm assuming that the marshalling of structs into JSON never fails but this
+// might be a bad assumption.
 
 package main
 
@@ -20,11 +30,13 @@ import (
     "strings"
     "os"
     "database/sql"
+    "time"
 
     "github.com/joho/godotenv"
     "github.com/google/uuid"
 
     "github.com/vedaRadev/chirpy-boot.dev/internal/database"
+    "github.com/vedaRadev/chirpy-boot.dev/internal/auth"
 )
 
 type ApiConfig struct  {
@@ -79,7 +91,10 @@ func (cfg *ApiConfig) HandleReset(res http.ResponseWriter, req *http.Request) {
 }
 
 func (cfg *ApiConfig) HandleCreateUser(res http.ResponseWriter, req *http.Request) {
-    type RequestParameters struct { Email string `json:"email"` }
+    type RequestParameters struct  {
+        Email string `json:"email"`
+        Password string `json:"password"`
+    }
 
     res.Header().Set("Content-Type", "application/json")
 
@@ -87,20 +102,44 @@ func (cfg *ApiConfig) HandleCreateUser(res http.ResponseWriter, req *http.Reques
     if err := json.NewDecoder(req.Body).Decode(&reqParams); err != nil {
         res.WriteHeader(http.StatusInternalServerError)
         res.Write([]byte(`{"error":"Failed to decode request json body"}`))
+        return
     }
 
-    user, err := cfg.Db.CreateUser(req.Context(), reqParams.Email)
+    hashedPassword, err := auth.HashPassword(reqParams.Password)
+    if err != nil {
+        res.WriteHeader(http.StatusInternalServerError)
+        res.Write([]byte(`{"error":"Failed to encrypt password"}`))
+        return
+    }
+
+    params := database.CreateUserParams {
+        Email: reqParams.Email,
+        HashedPassword: hashedPassword,
+    }
+    user, err := cfg.Db.CreateUser(req.Context(), params)
     if err != nil {
         res.WriteHeader(http.StatusInternalServerError)
         res.Write([]byte(`{"error":"Failed to create user"}`))
-        // TODO better logging
         fmt.Printf("Failed to create user %v: %v\n", reqParams.Email, err.Error())
         return
     }
 
+    // Intentionally omitting hashed_password field
+    type ResponseUser struct {
+        ID             uuid.UUID `json:"id"`
+        CreatedAt      time.Time `json:"created_at"`
+        UpdatedAt      time.Time `json:"updated_at"`
+        Email          string    `json:"email"`
+    }
+    responseUser := ResponseUser {
+        ID: user.ID,
+        CreatedAt: user.CreatedAt,
+        UpdatedAt: user.UpdatedAt,
+        Email: user.Email,
+    }
+
     res.WriteHeader(http.StatusCreated)
-    // FIXME assuming that the json marshalling will never fail
-    resBody, _ := json.Marshal(user)
+    resBody, _ := json.Marshal(responseUser)
     res.Write(resBody)
 }
 
@@ -148,7 +187,6 @@ func (cfg *ApiConfig) HandleCreateChirp(res http.ResponseWriter, req *http.Reque
     }
 
     res.WriteHeader(http.StatusCreated)
-    // FIXME assuming that the json marshalling will never fail
     resBody, _ := json.Marshal(chirp)
     res.Write(resBody)
 }
@@ -194,6 +232,51 @@ func (cfg *ApiConfig) HandleGetChirp(res http.ResponseWriter, req *http.Request)
     res.Write(resBody)
 }
 
+func (cfg *ApiConfig) HandleLogin(res http.ResponseWriter, req *http.Request) {
+    type RequestParameters struct  {
+        Email string `json:"email"`
+        Password string `json:"password"`
+    }
+
+    var reqParams RequestParameters
+    if err := json.NewDecoder(req.Body).Decode(&reqParams); err != nil {
+        res.WriteHeader(http.StatusInternalServerError)
+        res.Write([]byte(`{"error":"Failed to decode request json body"}`))
+        return
+    }
+
+    user, err := cfg.Db.GetUserByEmail(req.Context(), reqParams.Email)
+    if err != nil {
+        res.WriteHeader(http.StatusNotFound)
+        res.Write([]byte(`{"error":"User with the provided email not found"}`))
+        return
+    }
+
+    if err := auth.CheckPasswordHash(reqParams.Password, user.HashedPassword); err != nil {
+        res.WriteHeader(http.StatusUnauthorized)
+        res.Write([]byte(`{"error":"Incorrect email or password"}`))
+        return
+    }
+
+    // Intentionally omitting hashed_password field
+    type ResponseUser struct {
+        ID             uuid.UUID `json:"id"`
+        CreatedAt      time.Time `json:"created_at"`
+        UpdatedAt      time.Time `json:"updated_at"`
+        Email          string    `json:"email"`
+    }
+    responseUser := ResponseUser {
+        ID: user.ID,
+        CreatedAt: user.CreatedAt,
+        UpdatedAt: user.UpdatedAt,
+        Email: user.Email,
+    }
+
+    res.WriteHeader(http.StatusOK)
+    resBody, _ := json.Marshal(responseUser)
+    res.Write(resBody)
+}
+
 func main() {
     godotenv.Load()
     dbUrl := os.Getenv("DB_URL")
@@ -205,8 +288,6 @@ func main() {
     database.New(db)
     fmt.Println("Connected to the chirpy db")
     dbQueries := database.New(db)
-
-    serveMux := http.NewServeMux()
     platform := os.Getenv("PLATFORM")
     if platform == "" {
         fmt.Println("platform must be set")
@@ -214,6 +295,7 @@ func main() {
     }
     apiCfg := ApiConfig { Platform: platform, Db: dbQueries }
 
+    serveMux := http.NewServeMux()
     //============================== APP ==============================
     serveMux.Handle("/app/", apiCfg.MiddlewareMetricsInc(http.StripPrefix("/app", http.FileServer(http.Dir("site")))))
     //============================== API ==============================
@@ -226,6 +308,7 @@ func main() {
     serveMux.HandleFunc("GET /api/chirps/{id}", apiCfg.HandleGetChirp)
     serveMux.HandleFunc("POST /api/chirps", apiCfg.HandleCreateChirp)
     serveMux.HandleFunc("POST /api/users", apiCfg.HandleCreateUser)
+    serveMux.HandleFunc("POST /api/login", apiCfg.HandleLogin)
     //============================== ADMIN ==============================
     serveMux.HandleFunc("GET /admin/metrics", apiCfg.HandleMetrics)
     serveMux.HandleFunc("POST /admin/reset", apiCfg.HandleReset)
