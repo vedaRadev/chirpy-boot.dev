@@ -2,15 +2,70 @@ package auth
 
 import (
     "testing"
+    "time"
     "net/http"
+    "github.com/google/uuid"
 )
 
-func TestMakeJWT(t *testing.T) {
-    // TODO
+func TestJWTCreationAndValidation(t *testing.T) {
+    expectedId := uuid.New()
+    secret := "test secret"
+    expiry := 5 * time.Second
+
+    token, err := MakeJWT(expectedId, secret, expiry)
+    if err != nil {
+        t.Errorf("Token creation failed but shouldn't have: %v\n", err.Error())
+        t.FailNow()
+    }
+
+    resultId, err := ValidateJWT(token, secret)
+    if err != nil {
+        t.Errorf("Token validation failed but shouldn't have: %v\n", err.Error())
+        t.FailNow()
+    }
+
+    if resultId != expectedId {
+        t.Errorf("decoded id doesn't match the expected id! actual: %s, expected: %s\n", resultId, expectedId)
+        t.FailNow()
+    }
 }
 
-func TestValidateJWT(t *testing.T) {
-    // TODO
+func TestJWTExpires(t *testing.T) {
+    expectedId := uuid.New()
+    secret := "test secret"
+    expiry := 1 * time.Second
+
+    token, err := MakeJWT(expectedId, secret, expiry)
+    if err != nil {
+        t.Errorf("Token creation failed but shouldn't have: %v\n", err.Error())
+        t.FailNow()
+    }
+
+    time.Sleep(2 * time.Second)
+
+    _, err = ValidateJWT(token, secret)
+    if err == nil {
+        t.Error("Token failed to expire")
+        t.FailNow()
+    }
+}
+
+func TestJWTValidationFailsWithWrongSecret(t *testing.T) {
+    id := uuid.New()
+    goodSecret := "good token"
+    expiry := 5 * time.Second
+
+    badToken, err := MakeJWT(id, "bad token", expiry)
+    if err != nil {
+        t.Errorf("Token creation failed but shouldn't have: %v\n", err.Error())
+        t.FailNow()
+    }
+
+    _, err = ValidateJWT(badToken, goodSecret)
+    if err == nil {
+        t.Error("Validation should have failed!")
+        t.FailNow()
+    }
 }
 
 func TestGetBearerToken(t *testing.T) {
