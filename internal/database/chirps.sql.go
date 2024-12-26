@@ -64,11 +64,47 @@ func (q *Queries) GetChirp(ctx context.Context, id uuid.UUID) (Chirp, error) {
 }
 
 const getChirps = `-- name: GetChirps :many
+
 SELECT id, created_at, updated_at, body, user_id FROM chirps ORDER BY created_at ASC
 `
 
+// TODO figure out a way to collate GetChirps<sortorder> and GetUserChirps<sortorder>
+// might need to shift away from sqlc to something that allows for dynamic query generation
 func (q *Queries) GetChirps(ctx context.Context) ([]Chirp, error) {
 	rows, err := q.db.QueryContext(ctx, getChirps)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []Chirp
+	for rows.Next() {
+		var i Chirp
+		if err := rows.Scan(
+			&i.ID,
+			&i.CreatedAt,
+			&i.UpdatedAt,
+			&i.Body,
+			&i.UserID,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const getChirpsDesc = `-- name: GetChirpsDesc :many
+SELECT id, created_at, updated_at, body, user_id FROM chirps ORDER BY created_at DESC
+`
+
+func (q *Queries) GetChirpsDesc(ctx context.Context) ([]Chirp, error) {
+	rows, err := q.db.QueryContext(ctx, getChirpsDesc)
 	if err != nil {
 		return nil, err
 	}
@@ -102,6 +138,39 @@ SELECT id, created_at, updated_at, body, user_id FROM chirps WHERE user_id = $1 
 
 func (q *Queries) GetUserChirps(ctx context.Context, userID uuid.UUID) ([]Chirp, error) {
 	rows, err := q.db.QueryContext(ctx, getUserChirps, userID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []Chirp
+	for rows.Next() {
+		var i Chirp
+		if err := rows.Scan(
+			&i.ID,
+			&i.CreatedAt,
+			&i.UpdatedAt,
+			&i.Body,
+			&i.UserID,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const getUserChirpsDesc = `-- name: GetUserChirpsDesc :many
+SELECT id, created_at, updated_at, body, user_id FROM chirps WHERE user_id = $1 ORDER BY created_at DESC
+`
+
+func (q *Queries) GetUserChirpsDesc(ctx context.Context, userID uuid.UUID) ([]Chirp, error) {
+	rows, err := q.db.QueryContext(ctx, getUserChirpsDesc, userID)
 	if err != nil {
 		return nil, err
 	}

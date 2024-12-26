@@ -310,15 +310,23 @@ func (cfg *ApiConfig) HandleGetChirps(res http.ResponseWriter, req *http.Request
     queryValues := req.URL.Query()
 
     authorId := queryValues.Get("author_id")
+    sortOrder := strings.ToUpper(queryValues.Get("sort"))
+    if sortOrder == "" || (sortOrder != "ASC" && sortOrder != "DESC") { sortOrder = "ASC" }
+
     if authorId == "" {
-        chirps, err = cfg.Db.GetChirps(req.Context())
+        getChirps := cfg.Db.GetChirps
+        if sortOrder == "DESC" { getChirps = cfg.Db.GetChirpsDesc }
+        chirps, err = getChirps(req.Context())
     } else {
         userId, err := uuid.Parse(authorId)
         if err != nil {
             SendJsonErrorResponse(res, http.StatusBadRequest, "invalid author id")
             return
         }
-        chirps, err = cfg.Db.GetUserChirps(req.Context(), userId)
+
+        getUserChirps := cfg.Db.GetUserChirps
+        if sortOrder == "DESC" { getUserChirps = cfg.Db.GetUserChirpsDesc }
+        chirps, err = getUserChirps(req.Context(), userId)
     }
     if err != nil {
         SendJsonErrorResponse(res, http.StatusInternalServerError, "failed to get chirps")
