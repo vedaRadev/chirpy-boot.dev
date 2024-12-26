@@ -12,23 +12,6 @@
 //      ./internal/handlers/api/auth: login, revoke refresh token, refresh refresh token, etc
 //
 // Maybe just keep helper functions (e.g. SendJsonErrorResponse) in main.go?
-//
-//
-// Pull out JWT user authentication into a helper function.
-// The following pattern is super common:
-/*
-    accessToken, err := auth.GetBearerToken(req.Header)
-    if err != nil {
-        SendJsonErrorResponse(res, http.StatusUnauthorized, err.Error())
-        return
-    }
-    userId, err := auth.ValidateJWT(accessToken, cfg.Secret)
-    if err != nil {
-        SendJsonErrorResponse(res, http.StatusUnauthorized, "failed to validate access token")
-        return
-    }
-    // use userId somewhere down  here
-*/
 
 package main
 
@@ -42,6 +25,7 @@ import (
     "os"
     "database/sql"
     "time"
+    "errors"
 
     "github.com/joho/godotenv"
     "github.com/google/uuid"
@@ -70,14 +54,26 @@ func SendJsonResponse(res http.ResponseWriter, code int, data any) {
     res.Write(resBody)
 }
 
-// Try to decode request parameters, send an error response on decode failure.
-func DecodeRequestBodyParameters[T any](reqParams *T, res http.ResponseWriter, req *http.Request) bool {
-    if err := json.NewDecoder(req.Body).Decode(reqParams); err != nil {
-        SendJsonErrorResponse(res, http.StatusInternalServerError, "failed to decode request body")
-        return false
+func GetAuthenticatedUserId(header http.Header, secret string) (uuid.UUID, error, int) {
+    accessToken, err := auth.GetBearerToken(header)
+    if err != nil {
+        return uuid.UUID {}, err, http.StatusUnauthorized
+    }
+    userId, err := auth.ValidateJWT(accessToken, secret)
+    if err != nil {
+        return uuid.UUID {}, errors.New("failed to validate access token"), http.StatusUnauthorized
     }
 
-    return true
+    return userId, nil, 0
+}
+
+// Try to decode request parameters, send an error response on decode failure.
+func DecodeRequestBodyParameters[T any](reqParams *T, res http.ResponseWriter, req *http.Request) (error, int) {
+    if err := json.NewDecoder(req.Body).Decode(reqParams); err != nil {
+        return errors.New("failed to decode request body"), http.StatusInternalServerError
+    }
+
+    return nil, 0
 }
 
 type ApiConfig struct  {
@@ -138,7 +134,10 @@ func (cfg *ApiConfig) HandleCreateUser(res http.ResponseWriter, req *http.Reques
         Password string `json:"password"`
     }
     var reqParams RequestParameters
-    if success := DecodeRequestBodyParameters(&reqParams, res, req); !success { return }
+    if err, errCode := DecodeRequestBodyParameters(&reqParams, res, req); err != nil {
+        SendJsonErrorResponse(res, errCode, err.Error())
+        return
+    }
 
     hashedPassword, err := auth.HashPassword(reqParams.Password)
     if err != nil {
@@ -181,16 +180,14 @@ func (cfg *ApiConfig) HandleUpdateUser(res http.ResponseWriter, req *http.Reques
         Password string `json:"password"`
     }
     var reqParams RequestParameters
-    if success := DecodeRequestBodyParameters(&reqParams, res, req); !success { return }
-
-    accessToken, err := auth.GetBearerToken(req.Header)
-    if err != nil {
-        SendJsonErrorResponse(res, http.StatusUnauthorized, err.Error())
+    if err, errCode := DecodeRequestBodyParameters(&reqParams, res, req); err != nil {
+        SendJsonErrorResponse(res, errCode, err.Error())
         return
     }
-    userId, err := auth.ValidateJWT(accessToken, cfg.Secret)
+
+    userId, err, errCode := GetAuthenticatedUserId(req.Header, cfg.Secret)
     if err != nil {
-        SendJsonErrorResponse(res, http.StatusUnauthorized, "failed to validate access token")
+        SendJsonErrorResponse(res, errCode, err.Error())
         return
     }
 
@@ -228,17 +225,14 @@ func (cfg *ApiConfig) HandleUpdateUser(res http.ResponseWriter, req *http.Reques
 func (cfg *ApiConfig) HandleCreateChirp(res http.ResponseWriter, req *http.Request) {
     type RequestParameters struct  { Body string `json:"body"` }
     var reqParams RequestParameters
-    if success := DecodeRequestBodyParameters(&reqParams, res, req); !success { return }
-
-    accessToken, err := auth.GetBearerToken(req.Header)
-    if err != nil {
-        SendJsonErrorResponse(res, http.StatusUnauthorized, err.Error())
+    if err, errCode := DecodeRequestBodyParameters(&reqParams, res, req); err != nil {
+        SendJsonErrorResponse(res, errCode, err.Error())
         return
     }
 
-    userId, err := auth.ValidateJWT(accessToken, cfg.Secret)
+    userId, err, errCode := GetAuthenticatedUserId(req.Header, cfg.Secret)
     if err != nil {
-        SendJsonErrorResponse(res, http.StatusUnauthorized, "failed to validate access token")
+        SendJsonErrorResponse(res, errCode, err.Error())
         return
     }
 
@@ -279,14 +273,9 @@ func (cfg *ApiConfig) HandleDeleteChirp(res http.ResponseWriter, req *http.Reque
         return
     }
 
-    accessToken, err := auth.GetBearerToken(req.Header)
+    authenticatedUserId, err, errCode := GetAuthenticatedUserId(req.Header, cfg.Secret)
     if err != nil {
-        SendJsonErrorResponse(res, http.StatusUnauthorized, err.Error())
-        return
-    }
-    authenticatedUserId, err := auth.ValidateJWT(accessToken, cfg.Secret)
-    if err != nil {
-        SendJsonErrorResponse(res, http.StatusUnauthorized, "failed to validate access token")
+        SendJsonErrorResponse(res, errCode, err.Error())
         return
     }
 
@@ -341,7 +330,10 @@ func (cfg *ApiConfig) HandleLogin(res http.ResponseWriter, req *http.Request) {
         Password string `json:"password"`
     }
     var reqParams RequestParameters
-    if success := DecodeRequestBodyParameters(&reqParams, res, req); !success { return }
+    if err, errCode := DecodeRequestBodyParameters(&reqParams, res, req); err != nil {
+        SendJsonErrorResponse(res, errCode, err.Error())
+        return
+    }
 
     user, err := cfg.Db.GetUserByEmail(req.Context(), reqParams.Email)
     if err != nil {
