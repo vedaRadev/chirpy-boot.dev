@@ -5,6 +5,8 @@ import (
     "net/http"
     "fmt"
     "strings"
+    "encoding/hex"
+    "crypto/rand"
     "golang.org/x/crypto/bcrypt"
     "github.com/google/uuid"
     "github.com/golang-jwt/jwt/v5"
@@ -61,4 +63,10 @@ func GetBearerToken(headers http.Header) (string, error) {
     fields := strings.Fields(authHeader)
     if len(fields) != 2 { return "", fmt.Errorf("invalid auth header format") }
     return fields[1], nil
+}
+
+func MakeRefreshToken() (string, error) {
+    bytes := make([]byte, 32)
+    if _, err := rand.Read(bytes); err != nil { return "", err }
+    return hex.EncodeToString(bytes), nil
 }

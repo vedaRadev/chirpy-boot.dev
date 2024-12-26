@@ -152,16 +152,15 @@ func (cfg *ApiConfig) HandleCreateChirp(res http.ResponseWriter, req *http.Reque
     var reqParams RequestParameters
     if success := DecodeRequestBodyParameters(&reqParams, res, req); !success { return }
 
-    bearerToken, err := auth.GetBearerToken(req.Header)
+    accessToken, err := auth.GetBearerToken(req.Header)
     if err != nil {
-        SendJsonErrorResponse(res, http.StatusBadRequest, err.Error())
+        SendJsonErrorResponse(res, http.StatusUnauthorized, err.Error())
         return
     }
 
-    userId, err := auth.ValidateJWT(bearerToken, cfg.Secret)
+    userId, err := auth.ValidateJWT(accessToken, cfg.Secret)
     if err != nil {
-        SendJsonErrorResponse(res, http.StatusUnauthorized, "failed to authorize jwt")
-        fmt.Printf("failed to authorize jwt: %v\n", err.Error())
+        SendJsonErrorResponse(res, http.StatusUnauthorized, "failed to validate access token")
         return
     }
 
@@ -226,7 +225,6 @@ func (cfg *ApiConfig) HandleLogin(res http.ResponseWriter, req *http.Request) {
     type RequestParameters struct  {
         Email string `json:"email"`
         Password string `json:"password"`
-        ExpiresInSeconds *int `json:"expires_in_seconds"`
     }
     var reqParams RequestParameters
     if success := DecodeRequestBodyParameters(&reqParams, res, req); !success { return }
@@ -242,37 +240,101 @@ func (cfg *ApiConfig) HandleLogin(res http.ResponseWriter, req *http.Request) {
         return
     }
 
-    expiresIn := time.Hour
-    if reqParams.ExpiresInSeconds != nil {
-        clientDefinedDuration := time.Duration(*reqParams.ExpiresInSeconds) * time.Second
-        if clientDefinedDuration > 0 && clientDefinedDuration < time.Hour {
-            expiresIn = clientDefinedDuration
-        }
-    }
-
-    token, err := auth.MakeJWT(user.ID, cfg.Secret, expiresIn)
+    accessToken, err := auth.MakeJWT(user.ID, cfg.Secret, time.Hour)
     if err != nil {
         SendJsonErrorResponse(res, http.StatusInternalServerError, "failed to make jwt")
         return
     }
 
-    // Intentionally omitting hashed_password field
+    refreshToken, err := auth.MakeRefreshToken()
+    if err != nil {
+        SendJsonErrorResponse(res, http.StatusInternalServerError, "failed to make refresh token")
+        return
+    }
+    now := time.Now()
+    refreshTokenExpiry := now.Add(60 * 24 * time.Hour)
+    dbParams := database.CreateRefreshTokenParams {
+        Token: refreshToken,
+        UserID: user.ID,
+        ExpiresAt: refreshTokenExpiry,
+    }
+    if _, err := cfg.Db.CreateRefreshToken(req.Context(), dbParams); err != nil {
+        SendJsonErrorResponse(res, http.StatusInternalServerError, "failed to add refresh token to database")
+        return
+    }
+
     type ResponseUser struct {
-        ID          uuid.UUID `json:"id"`
-        CreatedAt   time.Time `json:"created_at"`
-        UpdatedAt   time.Time `json:"updated_at"`
-        Email       string    `json:"email"`
-        Token       string    `json:"token"`
+        ID              uuid.UUID `json:"id"`
+        CreatedAt       time.Time `json:"created_at"`
+        UpdatedAt       time.Time `json:"updated_at"`
+        Email           string    `json:"email"`
+        Token           string    `json:"token"`
+        RefreshToken    string    `json:"refresh_token"`
     }
     responseUser := ResponseUser {
         ID: user.ID,
         CreatedAt: user.CreatedAt,
         UpdatedAt: user.UpdatedAt,
         Email: user.Email,
-        Token: token,
+        Token: accessToken,
+        RefreshToken: refreshToken,
+    }
+    SendJsonResponse(res, http.StatusOK, responseUser)
+}
+
+// Send a new access token given a valid (non-expired and non-revoked) refresh token
+func (cfg *ApiConfig) HandleRefresh(res http.ResponseWriter, req *http.Request) {
+    bearerToken, err := auth.GetBearerToken(req.Header)
+    if err != nil {
+        SendJsonErrorResponse(res, http.StatusBadRequest, err.Error())
+        return
     }
 
-    SendJsonResponse(res, http.StatusOK, responseUser)
+    refreshToken, err := cfg.Db.GetRefreshToken(req.Context(), bearerToken)
+    if err != nil {
+        SendJsonErrorResponse(res, http.StatusUnauthorized, "refresh token does not exist")
+        return
+    }
+    now := time.Now()
+    if now.After(refreshToken.ExpiresAt) {
+        SendJsonErrorResponse(res, http.StatusUnauthorized, "refresh token expired")
+        return
+    }
+    if refreshToken.RevokedAt.Valid && now.After(refreshToken.RevokedAt.Time) {
+        SendJsonErrorResponse(res, http.StatusUnauthorized, "refresh token revoked")
+        return
+    }
+
+    user, err := cfg.Db.GetUserFromRefreshToken(req.Context(), refreshToken.Token)
+    if err != nil {
+        SendJsonErrorResponse(res, http.StatusInternalServerError, "failed to get user from refresh token")
+        return
+    }
+
+    type ResponseBody struct { Token string `json:"token"` }
+    accessToken, err := auth.MakeJWT(user.ID, cfg.Secret, time.Hour)
+    if err != nil {
+        SendJsonErrorResponse(res, http.StatusInternalServerError, "failed to create access token")
+        return
+    }
+    SendJsonResponse(res, http.StatusOK, ResponseBody { Token: accessToken })
+}
+
+func (cfg *ApiConfig) HandleRevoke(res http.ResponseWriter, req *http.Request) {
+    bearerToken, err := auth.GetBearerToken(req.Header)
+    if err != nil {
+        SendJsonErrorResponse(res, http.StatusBadRequest, err.Error())
+        return
+    }
+
+    _, err = cfg.Db.RevokeRefreshToken(req.Context(), bearerToken)
+    if err != nil {
+        // TODO figure out what the response status should actually be
+        SendJsonErrorResponse(res, http.StatusInternalServerError, "failed to revoke refresh token")
+        return
+    }
+
+    res.WriteHeader(http.StatusNoContent)
 }
 
 func main() {
@@ -312,6 +374,8 @@ func main() {
     serveMux.HandleFunc("POST /api/chirps", apiCfg.HandleCreateChirp)
     serveMux.HandleFunc("POST /api/users", apiCfg.HandleCreateUser)
     serveMux.HandleFunc("POST /api/login", apiCfg.HandleLogin)
+    serveMux.HandleFunc("POST /api/refresh", apiCfg.HandleRefresh)
+    serveMux.HandleFunc("POST /api/revoke", apiCfg.HandleRevoke)
     //============================== ADMIN ==============================
     serveMux.HandleFunc("GET /admin/metrics", apiCfg.HandleMetrics)
     serveMux.HandleFunc("POST /admin/reset", apiCfg.HandleReset)
