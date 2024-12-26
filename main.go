@@ -83,6 +83,7 @@ type ApiConfig struct  {
     FileServerHits atomic.Int32
     Platform string
     Secret string
+    PolkaKey string
     Db *database.Queries
 }
 
@@ -453,6 +454,16 @@ func (cfg *ApiConfig) HandleRevoke(res http.ResponseWriter, req *http.Request) {
 }
 
 func (cfg *ApiConfig) HandlePolkaEvent(res http.ResponseWriter, req *http.Request) {
+    apiKey, err := auth.GetApiKey(req.Header)
+    if err != nil {
+        SendJsonErrorResponse(res, http.StatusUnauthorized, err.Error())
+        return
+    }
+    if apiKey != cfg.PolkaKey {
+        SendJsonErrorResponse(res, http.StatusUnauthorized, "incorrect api key")
+        return
+    }
+
     type RequestParameters struct {
         Event string `json:"event"`
         // TODO does data need to be an interface{} here and more finely decoded based on event type
@@ -499,7 +510,17 @@ func main() {
         fmt.Println("secret must be set")
         os.Exit(1)
     }
-    apiCfg := ApiConfig { Platform: platform, Secret: secret, Db: dbQueries }
+    polkaKey := os.Getenv("POLKA_KEY")
+    if secret == "" {
+        fmt.Println("polka key must be set")
+        os.Exit(1)
+    }
+    apiCfg := ApiConfig {
+        Platform: platform,
+        PolkaKey: polkaKey,
+        Secret: secret,
+        Db: dbQueries,
+    }
 
     serveMux := http.NewServeMux()
     //============================== APP ==============================
