@@ -70,7 +70,6 @@ func GetAuthenticatedUserId(header http.Header, secret string) (uuid.UUID, error
     return userId, nil, 0
 }
 
-// Try to decode request parameters, send an error response on decode failure.
 func DecodeRequestBodyParameters[T any](reqParams *T, res http.ResponseWriter, req *http.Request) (error, int) {
     if err := json.NewDecoder(req.Body).Decode(reqParams); err != nil {
         return errors.New("failed to decode request body"), http.StatusInternalServerError
@@ -305,7 +304,22 @@ func (cfg *ApiConfig) HandleDeleteChirp(res http.ResponseWriter, req *http.Reque
 }
 
 func (cfg *ApiConfig) HandleGetChirps(res http.ResponseWriter, req *http.Request) {
-    chirps, err := cfg.Db.GetChirps(req.Context())
+    var chirps []database.Chirp
+    var err error
+
+    queryValues := req.URL.Query()
+
+    authorId := queryValues.Get("author_id")
+    if authorId == "" {
+        chirps, err = cfg.Db.GetChirps(req.Context())
+    } else {
+        userId, err := uuid.Parse(authorId)
+        if err != nil {
+            SendJsonErrorResponse(res, http.StatusBadRequest, "invalid author id")
+            return
+        }
+        chirps, err = cfg.Db.GetUserChirps(req.Context(), userId)
+    }
     if err != nil {
         SendJsonErrorResponse(res, http.StatusInternalServerError, "failed to get chirps")
         fmt.Printf("Failed to retrieve chirps from databse: %v\n", err)
