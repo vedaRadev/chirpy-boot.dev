@@ -1,6 +1,7 @@
 // TODO's (apart from the ones littered throughout the code already)
 //
 //
+// TODO
 // Break up handlers into separate files based on resource endpoint?
 // API is slowly getting large enough to get a good idea of how it should best be broken up.
 // Idea:
@@ -12,6 +13,8 @@
 //      ./internal/handlers/api/auth: login, revoke refresh token, refresh refresh token, etc
 //
 // Maybe just keep helper functions (e.g. SendJsonErrorResponse) in main.go?
+// Should login actually go under /api/users since it responds with the user?
+// Or maybe login and refresh token revocation/refresh should _all_ go into /api/users?
 
 package main
 
@@ -159,16 +162,18 @@ func (cfg *ApiConfig) HandleCreateUser(res http.ResponseWriter, req *http.Reques
     // TODO pull this out since it's shared between HandleUpdateUser and HandleCreateUser
     // Intentionally omitting hashed_password field
     type ResponseUser struct {
-        ID             uuid.UUID `json:"id"`
-        CreatedAt      time.Time `json:"created_at"`
-        UpdatedAt      time.Time `json:"updated_at"`
-        Email          string    `json:"email"`
+        ID              uuid.UUID   `json:"id"`
+        CreatedAt       time.Time   `json:"created_at"`
+        UpdatedAt       time.Time   `json:"updated_at"`
+        Email           string      `json:"email"`
+        IsChirpyRed     bool        `json:"is_chirpy_red"`
     }
     responseUser := ResponseUser {
         ID: user.ID,
         CreatedAt: user.CreatedAt,
         UpdatedAt: user.UpdatedAt,
         Email: user.Email,
+        IsChirpyRed: user.IsChirpyRed,
     }
 
     SendJsonResponse(res, http.StatusCreated, responseUser)
@@ -207,16 +212,18 @@ func (cfg *ApiConfig) HandleUpdateUser(res http.ResponseWriter, req *http.Reques
     // TODO pull this out since it's shared between HandleUpdateUser and HandleCreateUser
     // Intentionally omitting hashed_password field
     type ResponseUser struct {
-        ID             uuid.UUID `json:"id"`
-        CreatedAt      time.Time `json:"created_at"`
-        UpdatedAt      time.Time `json:"updated_at"`
-        Email          string    `json:"email"`
+        ID              uuid.UUID   `json:"id"`
+        CreatedAt       time.Time   `json:"created_at"`
+        UpdatedAt       time.Time   `json:"updated_at"`
+        Email           string      `json:"email"`
+        IsChirpyRed     bool        `json:"is_chirpy_red"`
     }
     responseUser := ResponseUser {
         ID: user.ID,
         CreatedAt: user.CreatedAt,
         UpdatedAt: user.UpdatedAt,
         Email: user.Email,
+        IsChirpyRed: user.IsChirpyRed,
     }
 
     SendJsonResponse(res, http.StatusOK, responseUser)
@@ -370,18 +377,20 @@ func (cfg *ApiConfig) HandleLogin(res http.ResponseWriter, req *http.Request) {
     }
 
     type ResponseUser struct {
-        ID              uuid.UUID `json:"id"`
-        CreatedAt       time.Time `json:"created_at"`
-        UpdatedAt       time.Time `json:"updated_at"`
-        Email           string    `json:"email"`
-        Token           string    `json:"token"`
-        RefreshToken    string    `json:"refresh_token"`
+        ID              uuid.UUID   `json:"id"`
+        CreatedAt       time.Time   `json:"created_at"`
+        UpdatedAt       time.Time   `json:"updated_at"`
+        Email           string      `json:"email"`
+        IsChirpyRed     bool        `json:"is_chirpy_red"`
+        Token           string      `json:"token"`
+        RefreshToken    string      `json:"refresh_token"`
     }
     responseUser := ResponseUser {
         ID: user.ID,
         CreatedAt: user.CreatedAt,
         UpdatedAt: user.UpdatedAt,
         Email: user.Email,
+        IsChirpyRed: user.IsChirpyRed,
         Token: accessToken,
         RefreshToken: refreshToken,
     }
@@ -443,6 +452,32 @@ func (cfg *ApiConfig) HandleRevoke(res http.ResponseWriter, req *http.Request) {
     res.WriteHeader(http.StatusNoContent)
 }
 
+func (cfg *ApiConfig) HandlePolkaEvent(res http.ResponseWriter, req *http.Request) {
+    type RequestParameters struct {
+        Event string `json:"event"`
+        // TODO does data need to be an interface{} here and more finely decoded based on event type
+        // later?
+        Data struct {
+            UserID uuid.UUID `json:"user_id"`
+        } `json:"data"`
+    }
+    var reqParams RequestParameters
+    if err, errCode := DecodeRequestBodyParameters(&reqParams, res, req); err != nil {
+        SendJsonErrorResponse(res, errCode, err.Error())
+        return
+    }
+
+    if reqParams.Event == "user.upgraded" {
+        _, err := cfg.Db.UpgradeUserToChirpyRed(req.Context(), reqParams.Data.UserID)
+        if err != nil {
+            SendJsonErrorResponse(res, http.StatusNotFound, "user not found")
+            return
+        }
+    }
+
+    res.WriteHeader(http.StatusNoContent)
+}
+
 func main() {
     godotenv.Load()
     dbUrl := os.Getenv("DB_URL")
@@ -488,6 +523,8 @@ func main() {
     serveMux.HandleFunc("POST /api/login", apiCfg.HandleLogin)
     serveMux.HandleFunc("POST /api/refresh", apiCfg.HandleRefresh)
     serveMux.HandleFunc("POST /api/revoke", apiCfg.HandleRevoke)
+    // Webhooks
+    serveMux.HandleFunc("POST /api/polka/webhooks", apiCfg.HandlePolkaEvent)
     //============================== ADMIN ==============================
     serveMux.HandleFunc("GET /admin/metrics", apiCfg.HandleMetrics)
     serveMux.HandleFunc("POST /admin/reset", apiCfg.HandleReset)
