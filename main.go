@@ -1,7 +1,16 @@
 // TODO's (apart from the ones littered throughout the code already)
 //
 // Break up handlers into separate files based on resource endpoint?
-// I don't think the API is really large enough to warrant this yet.
+// API is slowly getting large enough to get a good idea of how it should best be broken up.
+// Idea:
+//      ./internal/handlers
+//          
+//      ./internal/handlers/api
+//      ./internal/handlers/api/users: all user-related api actions
+//      ./internal/handlers/api/chirps: all chirp-related api actions
+//      ./internal/handlers/api/auth: login, revoke refresh token, refresh refresh token, etc
+//
+// Maybe just keep helper functions (e.g. SendJsonErrorResponse) in main.go?
 
 package main
 
@@ -130,6 +139,7 @@ func (cfg *ApiConfig) HandleCreateUser(res http.ResponseWriter, req *http.Reques
         return
     }
 
+    // TODO pull this out since it's shared between HandleUpdateUser and HandleCreateUser
     // Intentionally omitting hashed_password field
     type ResponseUser struct {
         ID             uuid.UUID `json:"id"`
@@ -145,6 +155,56 @@ func (cfg *ApiConfig) HandleCreateUser(res http.ResponseWriter, req *http.Reques
     }
 
     SendJsonResponse(res, http.StatusCreated, responseUser)
+}
+
+func (cfg *ApiConfig) HandleUpdateUser(res http.ResponseWriter, req *http.Request) {
+    type RequestParameters struct  {
+        Email string `json:"email"`
+        Password string `json:"password"`
+    }
+    var reqParams RequestParameters
+    if success := DecodeRequestBodyParameters(&reqParams, res, req); !success { return }
+
+    accessToken, err := auth.GetBearerToken(req.Header)
+    if err != nil {
+        SendJsonErrorResponse(res, http.StatusUnauthorized, err.Error())
+        return
+    }
+    userId, err := auth.ValidateJWT(accessToken, cfg.Secret)
+    if err != nil {
+        SendJsonErrorResponse(res, http.StatusUnauthorized, "failed to validate access token")
+        return
+    }
+
+    hashedPassword, err := auth.HashPassword(reqParams.Password)
+    if err != nil {
+        SendJsonErrorResponse(res, http.StatusInternalServerError, "failed to encrypt password")
+        return
+    }
+
+    params := database.UpdateUserParams {
+        ID: userId,
+        Email: reqParams.Email,
+        HashedPassword: hashedPassword,
+    }
+    user, err := cfg.Db.UpdateUser(req.Context(), params)
+
+    // TODO pull this out since it's shared between HandleUpdateUser and HandleCreateUser
+    // Intentionally omitting hashed_password field
+    type ResponseUser struct {
+        ID             uuid.UUID `json:"id"`
+        CreatedAt      time.Time `json:"created_at"`
+        UpdatedAt      time.Time `json:"updated_at"`
+        Email          string    `json:"email"`
+    }
+    responseUser := ResponseUser {
+        ID: user.ID,
+        CreatedAt: user.CreatedAt,
+        UpdatedAt: user.UpdatedAt,
+        Email: user.Email,
+    }
+
+    SendJsonResponse(res, http.StatusOK, responseUser)
 }
 
 func (cfg *ApiConfig) HandleCreateChirp(res http.ResponseWriter, req *http.Request) {
@@ -364,15 +424,20 @@ func main() {
     //============================== APP ==============================
     serveMux.Handle("/app/", apiCfg.MiddlewareMetricsInc(http.StripPrefix("/app", http.FileServer(http.Dir("site")))))
     //============================== API ==============================
+    // Health
     serveMux.HandleFunc("GET /api/healthz", func(res http.ResponseWriter, req *http.Request) {
         res.WriteHeader(http.StatusOK)
         res.Header().Add("Content-Type", "text/plain; charset=utf-8")
         res.Write([]byte("OK"))
     })
+    // Chirps
     serveMux.HandleFunc("GET /api/chirps", apiCfg.HandleGetChirps)
     serveMux.HandleFunc("GET /api/chirps/{id}", apiCfg.HandleGetChirp)
     serveMux.HandleFunc("POST /api/chirps", apiCfg.HandleCreateChirp)
+    // Users
     serveMux.HandleFunc("POST /api/users", apiCfg.HandleCreateUser)
+    serveMux.HandleFunc("PUT /api/users", apiCfg.HandleUpdateUser)
+    // Auth
     serveMux.HandleFunc("POST /api/login", apiCfg.HandleLogin)
     serveMux.HandleFunc("POST /api/refresh", apiCfg.HandleRefresh)
     serveMux.HandleFunc("POST /api/revoke", apiCfg.HandleRevoke)
