@@ -1,16 +1,34 @@
 // TODO's (apart from the ones littered throughout the code already)
 //
+//
 // Break up handlers into separate files based on resource endpoint?
 // API is slowly getting large enough to get a good idea of how it should best be broken up.
 // Idea:
 //      ./internal/handlers
-//          
+//
 //      ./internal/handlers/api
 //      ./internal/handlers/api/users: all user-related api actions
 //      ./internal/handlers/api/chirps: all chirp-related api actions
 //      ./internal/handlers/api/auth: login, revoke refresh token, refresh refresh token, etc
 //
 // Maybe just keep helper functions (e.g. SendJsonErrorResponse) in main.go?
+//
+//
+// Pull out JWT user authentication into a helper function.
+// The following pattern is super common:
+/*
+    accessToken, err := auth.GetBearerToken(req.Header)
+    if err != nil {
+        SendJsonErrorResponse(res, http.StatusUnauthorized, err.Error())
+        return
+    }
+    userId, err := auth.ValidateJWT(accessToken, cfg.Secret)
+    if err != nil {
+        SendJsonErrorResponse(res, http.StatusUnauthorized, "failed to validate access token")
+        return
+    }
+    // use userId somewhere down  here
+*/
 
 package main
 
@@ -253,6 +271,42 @@ func (cfg *ApiConfig) HandleCreateChirp(res http.ResponseWriter, req *http.Reque
     SendJsonResponse(res, http.StatusCreated, chirp)
 }
 
+func (cfg *ApiConfig) HandleDeleteChirp(res http.ResponseWriter, req *http.Request) {
+    idStr := req.PathValue("id")
+    idUuid, err := uuid.Parse(idStr)
+    if err != nil {
+        SendJsonErrorResponse(res, http.StatusBadRequest, "invalid uuid")
+        return
+    }
+
+    accessToken, err := auth.GetBearerToken(req.Header)
+    if err != nil {
+        SendJsonErrorResponse(res, http.StatusUnauthorized, err.Error())
+        return
+    }
+    authenticatedUserId, err := auth.ValidateJWT(accessToken, cfg.Secret)
+    if err != nil {
+        SendJsonErrorResponse(res, http.StatusUnauthorized, "failed to validate access token")
+        return
+    }
+
+    chirp, err := cfg.Db.GetChirp(req.Context(), idUuid)
+    if err != nil {
+        SendJsonErrorResponse(res, http.StatusNotFound, "chirp not found")
+        return
+    }
+    if chirp.UserID != authenticatedUserId {
+        SendJsonErrorResponse(res, http.StatusForbidden, "forbidden")
+        return
+    }
+
+    if _, err = cfg.Db.DeleteChirp(req.Context(), chirp.ID); err != nil {
+        SendJsonResponse(res, http.StatusInternalServerError, "failed to delete chirp")
+        return
+    }
+    res.WriteHeader(http.StatusNoContent)
+}
+
 func (cfg *ApiConfig) HandleGetChirps(res http.ResponseWriter, req *http.Request) {
     chirps, err := cfg.Db.GetChirps(req.Context())
     if err != nil {
@@ -302,7 +356,7 @@ func (cfg *ApiConfig) HandleLogin(res http.ResponseWriter, req *http.Request) {
 
     accessToken, err := auth.MakeJWT(user.ID, cfg.Secret, time.Hour)
     if err != nil {
-        SendJsonErrorResponse(res, http.StatusInternalServerError, "failed to make jwt")
+        SendJsonErrorResponse(res, http.StatusInternalServerError, "failed to make access token")
         return
     }
 
@@ -434,6 +488,7 @@ func main() {
     serveMux.HandleFunc("GET /api/chirps", apiCfg.HandleGetChirps)
     serveMux.HandleFunc("GET /api/chirps/{id}", apiCfg.HandleGetChirp)
     serveMux.HandleFunc("POST /api/chirps", apiCfg.HandleCreateChirp)
+    serveMux.HandleFunc("DELETE /api/chirps/{id}", apiCfg.HandleDeleteChirp)
     // Users
     serveMux.HandleFunc("POST /api/users", apiCfg.HandleCreateUser)
     serveMux.HandleFunc("PUT /api/users", apiCfg.HandleUpdateUser)
